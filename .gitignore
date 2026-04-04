@@ -83,3 +83,7 @@ __pycache__/
 # IDEs
 .vscode/
 .idea/
+
+# Git backups
+.git_bak/
+**/.git_bak/
