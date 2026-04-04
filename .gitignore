@@ -63,3 +63,23 @@ docs/_templates
 
 # Environment variables file
 .env
+*.env
+*.env.*
+
+# Node / Frontend 
+node_modules/
+Trading-Project/frontend/node_modules/
+Trading-Project/frontend/build/
+.yarn/
+.pnp*
+
+# Python
+.venv/
+.Python
+env/
+venv/
+__pycache__/
+
+# IDEs
+.vscode/
+.idea/
