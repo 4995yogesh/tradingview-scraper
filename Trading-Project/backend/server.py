@@ -10,21 +10,34 @@ import sys
 import os
 import logging
 from typing import List, Optional
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 # ── Make the tradingview_scraper package importable from the parent dir ──────
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+PIPE = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, PIPE)
 
 from tradingview_scraper.symbols.technicals import Indicators
-from tradingview_scraper.symbols.stream.streamer import Streamer
+from tradingview_scraper.symbols.historical import HistoricalFetcher
+from pipeline.main import pipeline
+from pipeline.data.storage import storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="TradingView Scraper API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start the event-driven pipeline in background threads
+    pipeline.start()
+    yield
+    pipeline.stop()
+
+app = FastAPI(title="TradingView Scraper API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,6 +51,7 @@ app.add_middleware(
 TIMEFRAME_MAP = {
     "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
     "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w", "1M": "1M",
+    "1D": "1d", "1W": "1w"  # Aliases for frontend React buttons
 }
 
 # Watchlist symbols to poll
@@ -54,6 +68,73 @@ WATCHLIST_SYMBOLS = [
 ]
 
 
+def _format_candles_for_ui(raw_candles, timeframe: str):
+    """
+    Converts raw candle dicts (with either 'time' key already set, or
+    'timestamp' from the Streamer) into the exact payload shape the
+    lightweight-charts frontend expects.
+    Returns (candle_data, volume_data) with no duplicates, sorted ascending.
+    """
+    use_timestamp = timeframe in ["1m", "5m", "15m", "30m", "1h", "4h"]
+    seen_times = set()
+    candle_data = []
+    volume_data = []
+
+    for c in raw_candles:
+        # Support both pipeline storage format (time) and raw Streamer format (timestamp)
+        if "timestamp" in c:
+            ts = int(c["timestamp"])
+            if use_timestamp:
+                time_val = ts
+            else:
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                time_val = dt.strftime("%Y-%m-%d")
+        else:
+            time_val = c["time"]
+
+        if time_val in seen_times:
+            continue
+        seen_times.add(time_val)
+
+        candle_data.append({
+            "time":  time_val,
+            "open":  round(float(c["open"]),  5),
+            "high":  round(float(c["high"]),  5),
+            "low":   round(float(c["low"]),   5),
+            "close": round(float(c["close"]), 5),
+        })
+        volume_data.append({
+            "time":  time_val,
+            "value": float(c.get("volume", 0)),
+            "color": "rgba(38,166,154,0.5)" if float(c["close"]) >= float(c["open"]) else "rgba(239,83,80,0.5)",
+        })
+
+    candle_data.sort(key=lambda x: x["time"])
+    volume_data.sort(key=lambda x: x["time"])
+    return candle_data, volume_data
+
+
+def _seed_storage(exchange: str, symbol: str, timeframe: str, raw_candles: list):
+    """Seed the pipeline storage from a fresh Streamer fetch so subsequent calls are instant."""
+    use_timestamp = timeframe in ["1m", "5m", "15m", "30m", "1h", "4h"]
+    for c in raw_candles:
+        ts = int(c["timestamp"])
+        if use_timestamp:
+            time_val = ts
+        else:
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            time_val = dt.strftime("%Y-%m-%d")
+
+        storage.append_candle(exchange, symbol, timeframe, {
+            "time":   time_val,
+            "open":   float(c["open"]),
+            "high":   float(c["high"]),
+            "low":    float(c["low"]),
+            "close":  float(c["close"]),
+            "volume": float(c.get("volume", 0)),
+        })
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -64,78 +145,74 @@ def get_ohlc(
     exchange: str = Query("OANDA"),
     symbol: str = Query("EURUSD"),
     timeframe: str = Query("1d"),
-    candles: int = Query(100, ge=10, le=2000),
+    candles: int = Query(50000, ge=10, le=100000),
 ):
-    """Return historical OHLCV candles for the given symbol."""
+    """
+    Return historical OHLCV candles for the given symbol.
+    Strategy:
+      1. Try in-memory pipeline storage (instant, <1ms).
+      2. If storage is empty / has fewer than 10 candles, fall back to a
+         direct Streamer fetch (original behaviour) and seed storage so
+         the NEXT request for the same symbol is instant.
+    """
     if timeframe not in TIMEFRAME_MAP:
         raise HTTPException(400, f"Unsupported timeframe '{timeframe}'. Choose from: {list(TIMEFRAME_MAP)}")
 
+    # Handle frontend passing the composite string (e.g., 'OANDA:EURUSD') in the symbol parameter
+    if ":" in symbol:
+        parts = symbol.split(":", 1)
+        exchange = parts[0]
+        symbol = parts[1]
+
     logger.info("OHLC request: %s:%s tf=%s candles=%d", exchange, symbol, timeframe, candles)
+
+    # ── Step 1: Check in-memory cache ────────────────────────────────────────
+    stored = storage.get_candles(exchange, symbol, timeframe, count=candles)
+
+    # Serve from cache if it satisfies >= 80% of request or has a solid 100+ baseline
+    threshold = min(int(candles * 0.8), 100)
+    if len(stored) >= threshold and len(stored) > 0:
+        logger.info("Serving %d candles from storage cache", len(stored))
+        candle_data, volume_data = _format_candles_for_ui(stored, timeframe)
+        return {"status": "success", "candleData": candle_data, "volumeData": volume_data}
+
+    # ── Step 2: Fall back to live Historical fetch ────────────────────────────
+    logger.info("Storage cold/empty for %s:%s %s — initiating deep historical backfill", exchange, symbol, timeframe)
     try:
-        streamer = Streamer(export_result=True, export_type="json")
-        data = streamer.stream(
+        fetcher = HistoricalFetcher()
+        raw_candles = fetcher.fetch_historical_data(
             exchange=exchange,
             symbol=symbol,
             timeframe=timeframe,
-            numb_price_candles=candles,
+            limit=candles,
+            chunk_size=5000,
+            delay_ms=200
         )
-        raw_candles = data.get("ohlc", [])
     except Exception as e:
-        logger.error("OHLC fetch failed: %s", e)
+        logger.error("OHLC live fetch failed: %s", e)
         raise HTTPException(500, f"Failed to fetch OHLC data: {str(e)}")
 
-    use_timestamp = timeframe in ["1m", "5m", "15m", "30m", "1h", "4h"]
+    if not raw_candles:
+        raise HTTPException(500, "No candle data returned from source")
 
-    candle_data = []
-    volume_data = []
-    
-    # Handle duplicates if scraper returns them - to be completely safe
-    seen_times = set()
-    
-    for c in raw_candles:
-        ts = int(c["timestamp"])
-        
-        if use_timestamp:
-            time_val = ts
-        else:
-            from datetime import datetime, timezone
-            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-            time_val = dt.strftime("%Y-%m-%d")
+    # Seed storage so next request is instant
+    _seed_storage(exchange, symbol, timeframe, raw_candles)
+    logger.info("Seeded storage with %d candles for %s:%s %s", len(raw_candles), exchange, symbol, timeframe)
 
-        if time_val in seen_times:
-            continue
-        seen_times.add(time_val)
+    candle_data, volume_data = _format_candles_for_ui(raw_candles, timeframe)
+    return {"status": "success", "candleData": candle_data, "volumeData": volume_data}
 
-        candle_data.append({
-            "time": time_val,
-            "open":  round(c["open"],  5),
-            "high":  round(c["high"],  5),
-            "low":   round(c["low"],   5),
-            "close": round(c["close"], 5),
-        })
-        volume_data.append({
-            "time":  time_val,
-            "value": c.get("volume", 0),
-            "color": "rgba(38,166,154,0.5)" if c["close"] >= c["open"] else "rgba(239,83,80,0.5)",
-        })
 
-    # Ensure items are strictly ascending as required by lightweight-charts
-    candle_data.sort(key=lambda x: x["time"])
-    volume_data.sort(key=lambda x: x["time"])
-
-    # Final pass to ensure NO duplicates at all (strictly ascending)
-    def filter_duplicates(data):
-        if not data: return []
-        unique = [data[0]]
-        for i in range(1, len(data)):
-            if data[i]["time"] != data[i-1]["time"]:
-                unique.append(data[i])
-        return unique
-
-    final_candles = filter_duplicates(candle_data)
-    final_volumes = filter_duplicates(volume_data)
-
-    return {"status": "success", "candleData": final_candles, "volumeData": final_volumes}
+@app.get("/api/features")
+def get_features(
+    exchange: str = Query("OANDA"),
+    symbol: str = Query("EURUSD"),
+    timeframe: str = Query("1d"),
+    limit: int = Query(50, ge=1, le=500)
+):
+    """Return extracted features (FVG, Swings) for the given symbol."""
+    features = storage.get_features(exchange, symbol, timeframe, count=limit)
+    return {"status": "success", "data": features}
 
 
 @app.get("/api/indicators")

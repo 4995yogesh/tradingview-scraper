@@ -293,6 +293,7 @@ class Streamer:
             ohlc_json_data = []
             indicator_json_data = {}
             expected_indicator_count = len(indicators) if ind_flag else 0
+            ohlc_ready = False
             
             logging.info(f"Starting data collection for {numb_price_candles} candles and {expected_indicator_count} indicators")
             
@@ -309,20 +310,18 @@ class Streamer:
                     indicator_json_data.update(received_indicator_data)
                     logging.info(f"Indicator data received: {len(indicator_json_data)}/{expected_indicator_count} indicators")
                 
-                # Check if we have sufficient data
-                ohlc_ready = len(ohlc_json_data) >= numb_price_candles
+                # As soon as we have OHLC data AND have seen a few more packets,
+                # break — TradingView sends all available historical bars in one
+                # timescale_update packet so waiting for more won't add candles.
+                if ohlc_json_data:
+                    ohlc_ready = True  # Accept whatever TV sent us
+
                 indicators_ready = not ind_flag or len(indicator_json_data) >= expected_indicator_count
 
-                # if ind_flag is True and len(ohlc_json_data)>0 and len(indicator_json_data)>0:
-                #     break
-                # elif ind_flag is False and len(ohlc_json_data)>0:
-                #     break
-
-                # Check if we have sufficient data
                 if ohlc_ready and indicators_ready:
                     break
 
-                if i > 50:
+                if i > 100:  # Absolute safety-net (was 50)
                     logging.warning(f"Timeout reached after {i} packets. Collected: OHLC={len(ohlc_json_data)}, Indicators={len(indicator_json_data)}")
                     if not ohlc_json_data:
                         raise DataNotFoundError("No 'OHLC' packet found within the timeout period.")
@@ -374,13 +373,11 @@ class Streamer:
         try:
             while True:
                 try:
-                    sleep(1)
                     result = self.stream_obj.ws.recv()
                     # Check if the result is a heartbeat or actual data
                     if re.match(r"~m~\d+~m~~h~\d+$", result):
-                        self.stream_obj.ws.recv()  # Echo back the message
                         logging.debug("Received heartbeat: %s", result)
-                        self.stream_obj.ws.send(result)
+                        self.stream_obj.ws.send(result)  # Echo heartbeat back
                     else:
                         split_result = [x for x in re.split(r'~m~\d+~m~', result) if x]
                         for item in split_result:

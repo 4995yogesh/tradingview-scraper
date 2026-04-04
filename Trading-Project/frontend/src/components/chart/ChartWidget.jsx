@@ -38,7 +38,7 @@ const ChartWidget = forwardRef(({ symbol, timeframe, chartType, activeIndicators
     setLoading(true);
     setError(null);
 
-    fetchLiveCandles(symbol, timeframe, 1000)
+    fetchLiveCandles(symbol, timeframe, 50000)
       .then((data) => {
         if (!cancelled) {
           setChartData(data);
