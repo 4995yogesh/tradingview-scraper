@@ -25,7 +25,7 @@ class StreamHandler:
     and sending properly formatted messages to the server.
     """
 
-    def __init__(self, websocket_url: str, jwt_token: str = "unauthorized_user_token"):
+    def __init__(self, websocket_url: str, jwt_token: str = "unauthorized_user_token", cookie: str = None):
         """
         Initializes the StreamData instance, setting up the WebSocket connection
         and initializing sessions for quotes and charts.
@@ -33,6 +33,7 @@ class StreamHandler:
         Args:
             websocket_url (str): The URL of the WebSocket server.
             jwt_token (str, optional): JWT token for authentication. Defaults to "unauthorized_user_token".
+            cookie (str, optional): TradingView session cookies.
         """
         self.request_header = {
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -46,9 +47,11 @@ class StreamHandler:
             "Upgrade": "websocket",
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36"
             )
         }
+        if cookie:
+            self.request_header["Cookie"] = cookie
+            
         self.ws = create_connection(websocket_url, headers=self.request_header)
         self._initialize(jwt_token=jwt_token)
 

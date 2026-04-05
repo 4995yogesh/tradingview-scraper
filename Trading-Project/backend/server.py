@@ -9,6 +9,10 @@ Endpoints:
 import sys
 import os
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from typing import List, Optional
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -57,14 +61,6 @@ TIMEFRAME_MAP = {
 # Watchlist symbols to poll
 WATCHLIST_SYMBOLS = [
     {"exchange": "OANDA",   "symbol": "EURUSD"},
-    {"exchange": "OANDA",   "symbol": "GBPUSD"},
-    {"exchange": "OANDA",   "symbol": "USDJPY"},
-    {"exchange": "OANDA",   "symbol": "AUDUSD"},
-    {"exchange": "OANDA",   "symbol": "USDCAD"},
-    {"exchange": "OANDA",   "symbol": "USDCHF"},
-    {"exchange": "BINANCE", "symbol": "BTCUSDT"},
-    {"exchange": "BINANCE", "symbol": "ETHUSDT"},
-    {"exchange": "OANDA",   "symbol": "XAUUSD"},
 ]
 
 
@@ -114,9 +110,10 @@ def _format_candles_for_ui(raw_candles, timeframe: str):
     return candle_data, volume_data
 
 
-def _seed_storage(exchange: str, symbol: str, timeframe: str, raw_candles: list):
+def _seed_storage(exchange: str, symbol: str, timeframe: str, raw_candles: list, prepend: bool = False):
     """Seed the pipeline storage from a fresh Streamer fetch so subsequent calls are instant."""
     use_timestamp = timeframe in ["1m", "5m", "15m", "30m", "1h", "4h"]
+    formatted = []
     for c in raw_candles:
         ts = int(c["timestamp"])
         if use_timestamp:
@@ -125,7 +122,7 @@ def _seed_storage(exchange: str, symbol: str, timeframe: str, raw_candles: list)
             dt = datetime.fromtimestamp(ts, tz=timezone.utc)
             time_val = dt.strftime("%Y-%m-%d")
 
-        storage.append_candle(exchange, symbol, timeframe, {
+        formatted.append({
             "time":   time_val,
             "open":   float(c["open"]),
             "high":   float(c["high"]),
@@ -133,6 +130,12 @@ def _seed_storage(exchange: str, symbol: str, timeframe: str, raw_candles: list)
             "close":  float(c["close"]),
             "volume": float(c.get("volume", 0)),
         })
+        
+    if prepend:
+        storage.prepend_candles(exchange, symbol, timeframe, formatted)
+    else:
+        for f in formatted:
+            storage.append_candle(exchange, symbol, timeframe, f)
 
 
 @app.get("/api/health")
@@ -145,61 +148,77 @@ def get_ohlc(
     exchange: str = Query("OANDA"),
     symbol: str = Query("EURUSD"),
     timeframe: str = Query("1d"),
-    candles: int = Query(50000, ge=10, le=100000),
+    candles: int = Query(1000, ge=10, le=100000), # Reduced default for fast UI load
+    end_time: Optional[str] = Query(None)
 ):
     """
     Return historical OHLCV candles for the given symbol.
     Strategy:
       1. Try in-memory pipeline storage (instant, <1ms).
-      2. If storage is empty / has fewer than 10 candles, fall back to a
-         direct Streamer fetch (original behaviour) and seed storage so
-         the NEXT request for the same symbol is instant.
+      2. If storage is empty or missing older data, fall back to a
+         direct Streamer fetch to deeply backfill.
     """
     if timeframe not in TIMEFRAME_MAP:
         raise HTTPException(400, f"Unsupported timeframe '{timeframe}'. Choose from: {list(TIMEFRAME_MAP)}")
 
-    # Handle frontend passing the composite string (e.g., 'OANDA:EURUSD') in the symbol parameter
     if ":" in symbol:
         parts = symbol.split(":", 1)
         exchange = parts[0]
         symbol = parts[1]
 
-    logger.info("OHLC request: %s:%s tf=%s candles=%d", exchange, symbol, timeframe, candles)
+    # Handle end_time parsing
+    use_timestamp = timeframe in ["1m", "5m", "15m", "30m", "1h", "4h"]
+    parsed_end = None
+    if end_time:
+        parsed_end = int(end_time) if use_timestamp else end_time
+
+    logger.info("OHLC request: %s:%s tf=%s candles=%d end_time=%s", exchange, symbol, timeframe, candles, end_time)
 
     # ── Step 1: Check in-memory cache ────────────────────────────────────────
-    stored = storage.get_candles(exchange, symbol, timeframe, count=candles)
+    stored = storage.get_candles(exchange, symbol, timeframe, count=candles, end_time=parsed_end)
 
-    # Serve from cache if it satisfies >= 80% of request or has a solid 100+ baseline
-    threshold = min(int(candles * 0.8), 100)
+    threshold = min(int(candles * 0.8), 20)
     if len(stored) >= threshold and len(stored) > 0:
         logger.info("Serving %d candles from storage cache", len(stored))
         candle_data, volume_data = _format_candles_for_ui(stored, timeframe)
         return {"status": "success", "candleData": candle_data, "volumeData": volume_data}
 
     # ── Step 2: Fall back to live Historical fetch ────────────────────────────
-    logger.info("Storage cold/empty for %s:%s %s — initiating deep historical backfill", exchange, symbol, timeframe)
+    logger.info("Storage cold/missing for %s:%s %s — initiating deep premium-tier historical backfill", exchange, symbol, timeframe)
     try:
-        fetcher = HistoricalFetcher()
+        cookie_value = os.getenv("TRADINGVIEW_COOKIE", "").strip()
+        jwt_value = os.getenv("TV_JWT_TOKEN", "unauthorized_user_token")
+        
+        # Determine how deep to backfill. A Premium account can handle ~20,000 bars intraday.
+        # By fetching massively deep, we instantly seed the entire storage block, avoiding pagination micro-requests.
+        deep_limit = 20000
+        
+        fetcher = HistoricalFetcher(websocket_jwt_token=jwt_value, cookie=cookie_value)
         raw_candles = fetcher.fetch_historical_data(
             exchange=exchange,
             symbol=symbol,
             timeframe=timeframe,
-            limit=candles,
+            limit=deep_limit,
             chunk_size=5000,
-            delay_ms=200
+            delay_ms=250,
+            start_date=None
         )
     except Exception as e:
         logger.error("OHLC live fetch failed: %s", e)
         raise HTTPException(500, f"Failed to fetch OHLC data: {str(e)}")
 
     if not raw_candles:
-        raise HTTPException(500, "No candle data returned from source")
+        logger.info("No more deeply historical candle data returned from TV source limit.")
+        return {"status": "success", "candleData": [], "volumeData": []}
 
-    # Seed storage so next request is instant
-    _seed_storage(exchange, symbol, timeframe, raw_candles)
+    # Seed storage
+    _seed_storage(exchange, symbol, timeframe, raw_candles, prepend=(end_time is not None))
     logger.info("Seeded storage with %d candles for %s:%s %s", len(raw_candles), exchange, symbol, timeframe)
 
-    candle_data, volume_data = _format_candles_for_ui(raw_candles, timeframe)
+    # Read the strictly bounded slice from the deeply backfilled storage!
+    final_candles_for_ui = storage.get_candles(exchange, symbol, timeframe, count=candles, end_time=parsed_end)
+
+    candle_data, volume_data = _format_candles_for_ui(final_candles_for_ui, timeframe)
     return {"status": "success", "candleData": candle_data, "volumeData": volume_data}
 
 

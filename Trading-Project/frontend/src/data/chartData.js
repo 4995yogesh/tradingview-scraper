@@ -34,18 +34,20 @@ const TF_CONFIG = {
   '1M':  { bars: 120, intervalMin: 43200, useTimestamp: false },
 };
 
-export async function fetchLiveCandles(symbol, timeframe = "1d", candles = 100) {
+export async function fetchLiveCandles(symbol, timeframe = "1d", candles = 1000, endTime = null) {
   const { exchange, tvSymbol } = resolveSymbol(symbol);
   try {
-    const res = await fetch(
-      `${API_BASE}/ohlc?exchange=${exchange}&symbol=${tvSymbol}&timeframe=${timeframe}&candles=${candles}`
-    );
+    let url = `${API_BASE}/ohlc?exchange=${exchange}&symbol=${tvSymbol}&timeframe=${timeframe}&candles=${candles}`;
+    if (endTime) {
+      url += `&end_time=${endTime}`;
+    }
+    const res = await fetch(url);
     if (!res.ok) throw new Error(`OHLC request failed: ${res.status}`);
     const json = await res.json();
     return { candleData: json.candleData || [], volumeData: json.volumeData || [] };
   } catch (err) {
     console.error("[API] fetchLiveCandles error:", err);
-    return generateCandlestickData(symbol, candles, timeframe);
+    return { candleData: [], volumeData: [] };
   }
 }
 

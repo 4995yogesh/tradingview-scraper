@@ -48,14 +48,28 @@ class DataStorage:
             else:
                 dq.append(candle)
 
-    def get_candles(self, exchange: str, symbol: str, timeframe: str, count: int = 100) -> List[dict]:
-        """Fetch the last 'count' candles."""
+    def get_candles(self, exchange: str, symbol: str, timeframe: str, count: int = 100, end_time=None) -> List[dict]:
+        """Fetch the last 'count' candles, optionally older than end_time."""
         with self.lock:
             try:
                 dq = self.candles[exchange][symbol][timeframe]
-                return list(dq)[-count:]
+                lst = list(dq)
+                if end_time is not None:
+                    lst = [c for c in lst if c["time"] < end_time]
+                return lst[-count:]
             except KeyError:
                 return []
+                
+    def prepend_candles(self, exchange: str, symbol: str, timeframe: str, older_candles: List[dict]):
+        """Prepend a chunk of older candles to the cache (avoiding duplicates)."""
+        with self.lock:
+            self._ensure_paths(exchange, symbol, timeframe)
+            dq = self.candles[exchange][symbol][timeframe]
+            # reversed ensures oldest items are pushed furthest left
+            for c in reversed(older_candles):
+                if dq and c["time"] >= dq[0]["time"]:
+                    continue
+                dq.appendleft(c)
 
     def get_features(self, exchange: str, symbol: str, timeframe: str, count: int = 100) -> List[dict]:
         with self.lock:

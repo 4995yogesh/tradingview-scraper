@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { useChartMemory, clearChartMemory } from '../../hooks/useChartMemory';
 import { ArrowLeft, PanelRightOpen, PanelRightClose, List, Clock, ChevronDown, Plus, MoreHorizontal, Grid3X3, Pencil, ExternalLink, TrendingUp } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
@@ -38,37 +39,46 @@ const defaultPanes = [
 const ChartPage = () => {
   const navigate = useNavigate();
   const chartWidgetRef = useRef(null);
-  const [symbol, setSymbol] = useState('EURUSD');
-  const [timeframe, setTimeframe] = useState('1d');
-  const [chartType, setChartType] = useState('candle');
-  const [panes, setPanes] = useState(defaultPanes);
-  const [activePaneIdx, setActivePaneIdx] = useState(0);
-  const [activeIndicators, setActiveIndicators] = useState([]);
-  const [activeTool, setActiveTool] = useState('cursor');
-  const [showRightPanel, setShowRightPanel] = useState(true);
-  const [rightTab, setRightTab] = useState('watchlist');
-  const [priceData, setPriceData] = useState(null);
-  const [drawings, setDrawings] = useState([]);
-  const [drawingsVisible, setDrawingsVisible] = useState(true);
-  const [drawingsLocked, setDrawingsLocked] = useState(false);
-  const [drawingHistory, setDrawingHistory] = useState([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
-  const [logScale, setLogScale] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [chartSettings, setChartSettings] = useState({
+  const containerRef = useRef(null);
+
+  // ── Persisted state (auto-saved to localStorage via useChartMemory) ──────────
+  const [symbol, setSymbol] = useChartMemory('symbol', 'EURUSD');
+  const [timeframe, setTimeframe] = useChartMemory('timeframe', '1d');
+  const [chartType, setChartType] = useChartMemory('chartType', 'candle');
+  const [panes, setPanes] = useChartMemory('panes', defaultPanes);
+  const [activeIndicators, setActiveIndicators] = useChartMemory('activeIndicators', []);
+  const [showRightPanel, setShowRightPanel] = useChartMemory('showRightPanel', true);
+  const [rightTab, setRightTab] = useChartMemory('rightTab', 'watchlist');
+  const [drawings, setDrawings] = useChartMemory('drawings', []);
+  const [drawingsVisible, setDrawingsVisible] = useChartMemory('drawingsVisible', true);
+  const [drawingsLocked, setDrawingsLocked] = useChartMemory('drawingsLocked', false);
+  const [logScale, setLogScale] = useChartMemory('logScale', false);
+  const [chartSettings, setChartSettings] = useChartMemory('chartSettings', {
     background: '#131722', showGrid: true, crosshairMode: 'normal',
     upColor: '#26A69A', downColor: '#EF5350', timezone: 'exchange',
     sessionBreaks: false, watermark: false,
   });
-  const [activeLayout, setActiveLayout] = useState('1');
+  const [activeLayout, setActiveLayout] = useChartMemory('activeLayout', '1');
+  const [stayInDrawMode, setStayInDrawMode] = useChartMemory('stayInDrawMode', false);
+  const [alerts, setAlerts] = useChartMemory('alerts', []);
+
+  // ── Transient state (not persisted) ─────────────────────────────────────────
+  const [activePaneIdx, setActivePaneIdx] = useState(0);
+  const [activeTool, setActiveTool] = useState('cursor');
+  const [priceData, setPriceData] = useState(null);
+  // Drawing undo/redo history lives only for the current session
+  const [drawingHistory, setDrawingHistory] = useState(() =>
+    drawings.length > 0 ? [drawings] : []
+  );
+  const [historyIndex, setHistoryIndex] = useState(() =>
+    drawings.length > 0 ? 0 : -1
+  );
+  const [showSettings, setShowSettings] = useState(false);
   const [showLayout, setShowLayout] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [stayInDrawMode, setStayInDrawMode] = useState(false);
   const [showAlert, setShowAlert] = useState(false);
   const [alertPrice, setAlertPrice] = useState('');
-  const [alerts, setAlerts] = useState([]);
   const [toastMsg, setToastMsg] = useState(null);
-  const containerRef = useRef(null);
 
   const [watchlistItems, setWatchlistItems] = useState(FALLBACK_WATCHLIST);
   const [watchlistLoading, setWatchlistLoading] = useState(true);
@@ -176,8 +186,14 @@ const ChartPage = () => {
     }
   }, []);
 
-  const handleSave = useCallback(() => {
-    showToast('Chart layout saved');
+  const handleSave = useCallback((isReset = false) => {
+    if (isReset) {
+      clearChartMemory();
+      showToast('Chart memory cleared — reload to apply defaults');
+    } else {
+      // All state changes are already auto-saved; this is just user feedback
+      showToast('✓ All preferences auto-saved');
+    }
   }, [showToast]);
 
   const handleBottomRange = useCallback((range) => {
@@ -206,7 +222,8 @@ const ChartPage = () => {
       if (e.target.tagName === 'INPUT') return;
       if (e.ctrlKey && e.key === 'z') { e.preventDefault(); handleUndo(); }
       if (e.ctrlKey && e.key === 'y') { e.preventDefault(); handleRedo(); }
-      if (e.ctrlKey && e.key === 's') { e.preventDefault(); handleSave(); }
+      if (e.ctrlKey && e.shiftKey && e.key === 'S') { e.preventDefault(); handleSave(true); }
+      else if (e.ctrlKey && e.key === 's') { e.preventDefault(); handleSave(); }
       if (e.key === 'Delete') { handleSetDrawings(prev => prev.slice(0, -1)); }
       if (e.key === 'Escape') { setActiveTool('cursor'); setShowSettings(false); setShowAlert(false); }
     };

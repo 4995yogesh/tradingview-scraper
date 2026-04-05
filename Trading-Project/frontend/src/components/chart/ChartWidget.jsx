@@ -1,14 +1,19 @@
 import React, { useEffect, useRef, useCallback, useState, forwardRef, useImperativeHandle } from 'react';
-import { createChart, CandlestickSeries, LineSeries, HistogramSeries, AreaSeries, BarSeries } from 'lightweight-charts';
+import { createChart, CandlestickSeries, LineSeries, AreaSeries, BarSeries } from 'lightweight-charts';
 import { fetchLiveCandles, calculateSMA, calculateEMA, calculateBB } from '../../data/chartData';
 
 const ChartWidget = forwardRef(({ symbol, timeframe, chartType, activeIndicators, onPriceUpdate, logScale, chartSettings }, ref) => {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
-  const volumeSeriesRef = useRef(null);
   const indicatorSeriesRef = useRef([]);
+  const configRef = useRef(null);
+  const isLoadingMoreRef = useRef(false);
+
   const [chartData, setChartData] = useState(null);
+  const chartDataRef = useRef(null);
+  chartDataRef.current = chartData;
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -38,7 +43,7 @@ const ChartWidget = forwardRef(({ symbol, timeframe, chartType, activeIndicators
     setLoading(true);
     setError(null);
 
-    fetchLiveCandles(symbol, timeframe, 50000)
+    fetchLiveCandles(symbol, timeframe, 1000)
       .then((data) => {
         if (!cancelled) {
           setChartData(data);
@@ -58,22 +63,58 @@ const ChartWidget = forwardRef(({ symbol, timeframe, chartType, activeIndicators
   const initChart = useCallback(() => {
     if (!chartContainerRef.current || !chartData || chartData.candleData.length === 0) return;
 
-    // Strict time duplicate filter for lightweight-charts
-    const filterData = (data) => {
+    // Sort ascending by time, then remove duplicates — required by lightweight-charts
+    const sortAndDedupe = (data) => {
       if (!data || data.length === 0) return [];
-      const result = [data[0]];
-      for (let i = 1; i < data.length; i++) {
-        if (data[i].time !== data[i-1].time) {
-          result.push(data[i]);
-        }
+      const sorted = [...data].sort((a, b) => {
+        const ta = typeof a.time === 'string' ? a.time : Number(a.time);
+        const tb = typeof b.time === 'string' ? b.time : Number(b.time);
+        if (ta < tb) return -1;
+        if (ta > tb) return 1;
+        return 0;
+      });
+      const result = [sorted[0]];
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i].time !== sorted[i - 1].time) result.push(sorted[i]);
       }
       return result;
     };
 
-    const candleData = filterData(chartData.candleData);
-    const volumeData = filterData(chartData.volumeData);
+    const candleData = sortAndDedupe(chartData.candleData);
+    const volumeData = sortAndDedupe(chartData.volumeData);
 
     if (candleData.length === 0) return;
+
+    const newConfig = JSON.stringify({ symbol, timeframe, chartType, activeIndicators, logScale, chartSettings });
+    const isDataUpdateOnly = (configRef.current === newConfig) && chartRef.current;
+
+    if (isDataUpdateOnly) {
+      let mainSeries = seriesRef.current;
+      if (chartType === 'line' || chartType === 'area') {
+        mainSeries.setData(candleData.map(d => ({ time: d.time, value: d.close })));
+      } else {
+        mainSeries.setData(candleData);
+      }
+
+      let indicatorIdx = 0;
+      if (activeIndicators.includes('SMA')) {
+        indicatorSeriesRef.current[indicatorIdx++].setData(calculateSMA(candleData, 20));
+        indicatorSeriesRef.current[indicatorIdx++].setData(calculateSMA(candleData, 50));
+      }
+      if (activeIndicators.includes('EMA')) {
+        indicatorSeriesRef.current[indicatorIdx++].setData(calculateEMA(candleData, 12));
+        indicatorSeriesRef.current[indicatorIdx++].setData(calculateEMA(candleData, 26));
+      }
+      if (activeIndicators.includes('BB')) {
+        const bb = calculateBB(candleData, 20, 2);
+        indicatorSeriesRef.current[indicatorIdx++].setData(bb.upper);
+        indicatorSeriesRef.current[indicatorIdx++].setData(bb.middle);
+        indicatorSeriesRef.current[indicatorIdx++].setData(bb.lower);
+      }
+      return; 
+    }
+
+    configRef.current = newConfig;
 
     if (chartRef.current) {
       chartRef.current.remove();
@@ -114,7 +155,7 @@ const ChartWidget = forwardRef(({ symbol, timeframe, chartType, activeIndicators
       },
       rightPriceScale: {
         borderColor: '#2A2E39',
-        scaleMargins: { top: 0.1, bottom: 0.25 },
+        scaleMargins: { top: 0.1, bottom: 0.05 },
         mode: logScale ? 1 : 0, // 0=Normal, 1=Logarithmic
       },
       handleScroll: { vertTouchDrag: false },
@@ -155,10 +196,7 @@ const ChartWidget = forwardRef(({ symbol, timeframe, chartType, activeIndicators
     }
     seriesRef.current = mainSeries;
  
-    const volumeSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'volume' });
-    volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
-    volumeSeries.setData(volumeData);
-    volumeSeriesRef.current = volumeSeries;
+
 
     indicatorSeriesRef.current = [];
     if (activeIndicators.includes('SMA')) {
@@ -193,9 +231,44 @@ const ChartWidget = forwardRef(({ symbol, timeframe, chartType, activeIndicators
       if (d) onPriceUpdate?.(d);
     });
 
+    chart.timeScale().subscribeVisibleLogicalRangeChange(async (logicalRange) => {
+      if (!logicalRange) return;
+      // If user scrolls and hits near the beginning of visually loaded data
+      if (logicalRange.from < 50 && !isLoadingMoreRef.current) {
+        const currentData = chartDataRef.current;
+        if (!currentData || currentData.candleData.length === 0) return;
+        
+        isLoadingMoreRef.current = true;
+        try {
+          const oldestTime = currentData.candleData[0].time;
+          const newData = await fetchLiveCandles(symbol, timeframe, 1000, oldestTime);
+          if (newData.candleData.length > 0) {
+            // Merge and sort so there are zero ordering issues when React re-renders
+            const mergeSort = (older, newer) => {
+              const merged = [...older, ...newer];
+              merged.sort((a, b) => {
+                const ta = typeof a.time === 'string' ? a.time : Number(a.time);
+                const tb = typeof b.time === 'string' ? b.time : Number(b.time);
+                return ta < tb ? -1 : ta > tb ? 1 : 0;
+              });
+              // Deduplicate
+              return merged.filter((c, i, arr) => i === 0 || c.time !== arr[i - 1].time);
+            };
+            setChartData(prev => ({
+              candleData: mergeSort(newData.candleData, prev.candleData),
+              volumeData: mergeSort(newData.volumeData, prev.volumeData)
+            }));
+          }
+        } finally {
+          // Add a short delay to prevent over-fetching on rapid scroll
+          setTimeout(() => { isLoadingMoreRef.current = false; }, 500);
+        }
+      }
+    });
+
     chart.timeScale().fitContent();
     if (chartData.candleData.length > 0) onPriceUpdate?.(chartData.candleData[chartData.candleData.length - 1]);
-  }, [chartData, chartType, activeIndicators, onPriceUpdate, logScale, chartSettings, timeframe]);
+  }, [chartData, chartType, activeIndicators, onPriceUpdate, logScale, chartSettings, timeframe, symbol]);
 
   useEffect(() => { initChart(); }, [initChart]);
 

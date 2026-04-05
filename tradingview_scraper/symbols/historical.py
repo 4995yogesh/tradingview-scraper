@@ -20,9 +20,10 @@ class HistoricalFetcher:
     Extracts tens of thousands of candles by repeatedly requesting chunks backward in time.
     """
 
-    def __init__(self, websocket_jwt_token: str = "unauthorized_user_token"):
+    def __init__(self, websocket_jwt_token: str = "unauthorized_user_token", cookie: str = None):
         self.ws_url = "wss://data.tradingview.com/socket.io/websocket?from=chart%2FVEPYsueI%2F&type=chart"
         self.jwt_token = websocket_jwt_token
+        self.cookie = cookie
         self.stream_obj = None
 
     def fetch_historical_data(
@@ -68,7 +69,7 @@ class HistoricalFetcher:
         if not limit and not target_timestamp:
             limit = 5000
 
-        self.stream_obj = StreamHandler(websocket_url=self.ws_url, jwt_token=self.jwt_token)
+        self.stream_obj = StreamHandler(websocket_url=self.ws_url, jwt_token=self.jwt_token, cookie=self.cookie)
 
         timeframe_map = {
             '1m': '1', '5m': '5', '15m': '15', '30m': '30',
