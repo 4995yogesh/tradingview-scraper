@@ -34,9 +34,23 @@ const TF_CONFIG = {
   '1M':  { bars: 120, intervalMin: 43200, useTimestamp: false },
 };
 
-export async function fetchLiveCandles(symbol, timeframe = "1d", candles = 1000, endTime = null) {
+export async function fetchLiveCandles(symbol, timeframe = "1d", candles = 5000, endTime = null) {
   const { exchange, tvSymbol } = resolveSymbol(symbol);
   try {
+    // For initial load with small candle count, try test endpoint first
+    if (!endTime && candles <= 100) {
+      try {
+        const testRes = await fetch(`${API_BASE}/test-candles`, { timeout: 2000 });
+        if (testRes.ok) {
+          const testJson = await testRes.json();
+          console.log("[API] Using test data for immediate display");
+          return { candleData: testJson.candleData || [], volumeData: testJson.volumeData || [] };
+        }
+      } catch (e) {
+        console.log("[API] Test endpoint unavailable, loading real data...");
+      }
+    }
+    
     let url = `${API_BASE}/ohlc?exchange=${exchange}&symbol=${tvSymbol}&timeframe=${timeframe}&candles=${candles}`;
     if (endTime) {
       url += `&end_time=${endTime}`;

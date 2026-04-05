@@ -31,10 +31,10 @@ class HistoricalFetcher:
         exchange: str,
         symbol: str,
         timeframe: str = '1m',
-        limit: Optional[int] = 10000,
+        limit: Optional[int] = 100000,  # Premium default: 100k candles
         start_date: Optional[Union[str, datetime]] = None,
-        chunk_size: int = 5000,
-        delay_ms: int = 200
+        chunk_size: int = 10000,  # Premium: Larger chunks for faster fetching
+        delay_ms: int = 150  # Premium: Reduced delay for speed
     ) -> List[dict]:
         """
         Fetches historical OHLC data with pagination.
@@ -43,10 +43,10 @@ class HistoricalFetcher:
             exchange: The exchange to fetch data from (e.g., "OANDA").
             symbol: The symbol to fetch data for (e.g., "EURUSD").
             timeframe: The timeframe for the data (e.g., '1m', '1h', '1d').
-            limit: Maximum total candles to fetch. If start_date is used, this can be None.
+            limit: Maximum total candles to fetch. Premium default: 100k. If start_date is used, this can be None.
             start_date: Fetch backward until this date is reached (str 'YYYY-MM-DD' or datetime).
-            chunk_size: Number of candles to request per pagination call (max usually ~5000).
-            delay_ms: Sleep delay between pagination requests to avoid rate limits.
+            chunk_size: Number of candles to request per pagination call. Premium: up to 10k per chunk.
+            delay_ms: Sleep delay between pagination requests to avoid rate limits. Premium: 150ms.
 
         Returns:
             List[dict]: Deduplicated, chronologically sorted list of OHLC candles.
@@ -65,9 +65,9 @@ class HistoricalFetcher:
                     start_date = start_date.replace(tzinfo=timezone.utc)
                 target_timestamp = int(start_date.timestamp())
 
-        # If neither limit nor start_date is set, fallback to a sensible default limit
+        # If neither limit nor start_date is set, fallback to premium default
         if not limit and not target_timestamp:
-            limit = 5000
+            limit = 100000  # Premium default
 
         self.stream_obj = StreamHandler(websocket_url=self.ws_url, jwt_token=self.jwt_token, cookie=self.cookie)
 

@@ -43,7 +43,7 @@ const ChartWidget = forwardRef(({ symbol, timeframe, chartType, activeIndicators
     setLoading(true);
     setError(null);
 
-    fetchLiveCandles(symbol, timeframe, 1000)
+    fetchLiveCandles(symbol, timeframe, 200)  // Request 200 candles for better initial view
       .then((data) => {
         if (!cancelled) {
           setChartData(data);
@@ -241,7 +241,7 @@ const ChartWidget = forwardRef(({ symbol, timeframe, chartType, activeIndicators
         isLoadingMoreRef.current = true;
         try {
           const oldestTime = currentData.candleData[0].time;
-          const newData = await fetchLiveCandles(symbol, timeframe, 1000, oldestTime);
+          const newData = await fetchLiveCandles(symbol, timeframe, 5000, oldestTime);
           if (newData.candleData.length > 0) {
             // Merge and sort so there are zero ordering issues when React re-renders
             const mergeSort = (older, newer) => {

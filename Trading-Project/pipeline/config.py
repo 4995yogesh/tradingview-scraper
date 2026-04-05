@@ -10,8 +10,8 @@ class Config:
         self.BASE_TIMEFRAME = os.getenv("BASE_TIMEFRAME", "1m")
         self.MTF_TIMEFRAMES = os.getenv("MTF_TIMEFRAMES", "5m,15m,1h,4h").split(",")
         
-        # Ring buffer sizes - Increase to 50000 to hold max history safely for charts
-        self.STORAGE_CANDLE_LIMIT = int(os.getenv("STORAGE_CANDLE_LIMIT", 50000))
+        # Ring buffer sizes - Premium account: 200k candle storage for deep history
+        self.STORAGE_CANDLE_LIMIT = int(os.getenv("STORAGE_CANDLE_LIMIT", 200000))
         
         # Redis / DB configs could be added here
         

@@ -6,6 +6,7 @@ from pipeline.data.collector import collector
 # Import these so they register their subscriptions
 import pipeline.data.validator
 import pipeline.data.storage
+import pipeline.data.db_integration  # Database integration for persistent storage
 import pipeline.processing.aggregator
 import pipeline.processing.features
 
