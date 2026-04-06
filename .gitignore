@@ -87,3 +87,7 @@ __pycache__/
 # Git backups
 .git_bak/
 **/.git_bak/
+-e 
+# Environment files
+*.env
+*.env.*

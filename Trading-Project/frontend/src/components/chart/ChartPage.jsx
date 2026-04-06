@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useChartMemory, clearChartMemory } from '../../hooks/useChartMemory';
-import { ArrowLeft, PanelRightOpen, PanelRightClose, List, Clock, ChevronDown, Plus, MoreHorizontal, Grid3X3, Pencil, ExternalLink, TrendingUp } from 'lucide-react';
+import { ArrowLeft, PanelRightOpen, PanelRightClose, List, Clock, ChevronDown, Plus, MoreHorizontal, Grid3X3, Pencil, ExternalLink, TrendingUp, Maximize } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import ChartWidget from './ChartWidget';
@@ -536,6 +536,18 @@ const ChartPage = () => {
               className="px-1.5 py-0.5 text-[10px] text-[#787B86] hover:text-[#D1D4DC] hover:bg-[#2A2E3960] rounded transition-colors">{r}</button>
           ))}
         </div>
+        
+        {/* Center - Reset Chart View Button (TradingView style) */}
+        <button 
+          onClick={() => { chartWidgetRef.current?.fitContent(); showToast('Chart view reset'); }}
+          data-testid="reset-chart-view-btn"
+          className="flex items-center gap-1.5 px-2.5 py-1 bg-[#2A2E39] hover:bg-[#363A45] text-[#D1D4DC] hover:text-white rounded-[4px] transition-all duration-200 group"
+          title="Reset chart view"
+        >
+          <Maximize size={12} className="group-hover:scale-110 transition-transform" />
+          <span className="text-[10px] font-medium">Reset</span>
+        </button>
+        
         <div className="flex items-center gap-3 text-[10px] text-[#787B86]">
           <span>{new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} UTC</span>
           <div className="w-px h-3 bg-[#2A2E39]" />
